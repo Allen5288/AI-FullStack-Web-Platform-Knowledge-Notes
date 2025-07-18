@@ -608,7 +608,7 @@ greet(...people);  // Hello Alice, Bob, Charlie
 
 ## 5.1 Using set
 
-```javascript+
+```javascript
 let nums = [2, 5, 2, 4];
 let set = new Set(nums);
 // The Set object will automatically remove any duplicate values from the array. In your example, the array nums contains the following values: 2, 5, 2, and 4. After converting nums to a Set, set will contain only unique values: 2, 5, and 4.

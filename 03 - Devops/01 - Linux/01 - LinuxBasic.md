@@ -72,8 +72,6 @@ ps aux --sort=-%mem | head |
 **Example:**
 
 ```bash
-bash
-CopyEdit
 ln -s original.txt shortcut.txt   # soft link
 ln original.txt copy.txt          # hard link
 
