@@ -14,6 +14,7 @@ This is a step-by-step journey through:
   - Browser opens a TCP connection with the server:
     - SYN → SYN-ACK → ACK (3-way handshake)
   - Ensures both client and server are ready to talk reliably
+  - Another one is UDP compared to TCP
 - HTTP/HTTPS
   - https:
     - Encrypts communication
@@ -28,7 +29,7 @@ This is a step-by-step journey through:
   - Might:
     - Authenticate the user
     - Query a database
-    - Render HTML or return JSON
+    - Render HTML(initial stage no matter ssr or csr) or return JSON
   - request send back
 - Browser rendering
   - Parses HTML → builds **DOM tree**
@@ -42,7 +43,6 @@ Browser ➜ DNS ➜ IP
       ➜ HTTP Request ➜ Server
       ⇦ HTTP Response ⇦
       ⇨ Render UI ⇨
-
 ```
 
 ## 2. HTTP & HTTPS
@@ -289,23 +289,83 @@ Example: Logging into a website
 | Form draft during a session | `sessionStorage` |
 | CSRF protection | Cookie + SameSite flag |
 
-## 5. When you click a button in the browser
+## 5. GET vs POST
 
-Case 1: **Purely Frontend Button**
+You use **GET** to **retrieve** data from a server and **POST** to **submit** data to a server to create or update a resource.
 
-- Browser detects the click (`click` event).
-- JavaScript executes instantly in the browser.
-- DOM is modified (e.g., changes color, hides text).
-- No HTTP request, no server, no network.
-- Immediate UI update — all in the user's browser.
+The simplest rule of thumb is this: if you are only **reading** or **fetching** information, use GET. If you are **changing** something on the server—creating, updating, or deleting—use POST (or other methods like PUT, PATCH, DELETE).
 
 ---
 
-Case 2: **Backend-Connected Button**
+Comparison: GET vs. POST
 
-1. Click triggers JavaScript event.
-2. JS sends HTTP request (`fetch()`).
-3. Browser performs DNS lookup, TLS handshake (if HTTPS).
-4. Server receives request, runs backend logic (auth, DB queries).
-5. Server sends back a response (e.g., JSON).
-6. JS receives the data and updates the DOM accordingly.
+| Feature | GET | POST |
+| --- | --- | --- |
+| **Purpose** | To **retrieve** data that already exists. | To **submit** data to be processed, often creating a new resource. |
+| **Idempotency** | ✅ **Idempotent**. Making the same GET request multiple times will produce the same result. | ❌ **Not Idempotent**. Making the same POST request multiple times will likely create multiple new resources. |
+| **Data Location** | Data is passed in the **URL query string**. (`/users?id=123`) | Data is sent in the **request body**. |
+| **Security** | ❌ **Less secure for sensitive data**. Data is visible in the URL, browser history, and server logs. | ✅ **More secure for sensitive data**. The request body is not stored in browser history or server logs. (Note: Use HTTPS for actual encryption). |
+| **Caching** | ✅ Can be **cached** by browsers and proxies, leading to faster load times. | ❌ Not cached by default. |
+| **Bookmarking** | ✅ Can be **bookmarked** and shared easily. | ❌ Cannot be bookmarked. |
+| **Data Size** | Limited by URL length (usually ~2048 characters). | No practical limit on data size. |
+
+---
+
+**Never use GET for state-changing actions.** A classic mistake is creating a "delete" link like `<a href="/products/delete?id=123">Delete</a>`. This is dangerous because a search engine crawler or a browser's pre-fetching mechanism could follow that link and unintentionally delete data from your database. Any action that modifies data must use POST, PUT, PATCH, or DELETE.
+
+## 6. Request and Reponse Infomation
+
+---
+
+➡️ The Request (Client to Server)
+
+When your browser or application asks a server for something, it sends a request containing three main parts.
+
+1. **Request-Line**: A single line that says what you want.
+    - **Method**: The action to be performed (e.g., `GET`, `POST`).
+    - **Path**: The target resource on the server (e.g., `/api/users/123`).
+    - **HTTP Version**: The protocol version (e.g., `HTTP/1.1`).
+
+        `GET /users/123 HTTP/1.1`
+
+2. **Headers** 📝: Key-value pairs that provide metadata about the request.
+    - **`Host`**: The domain name of the server (e.g., `api.example.com`). This is required.
+    - **`User-Agent`**: Identifies the client making the request (e.g., `Mozilla/5.0 ... Chrome/126.0.0.0`).
+    - **`Accept`**: The content types the client can understand (e.g., `application/json`).
+    - **`Authorization`**: Credentials for accessing a protected resource (e.g., `Bearer eyJhbGci...`).
+3. **Body** 📦: The actual data being sent to the server. This is primarily used with `POST`, `PUT`, and `PATCH` requests. For a `GET` request, the body is empty.JSON
+
+    `{
+      "username": "newuser",
+      "email": "new@example.com"
+    }`
+
+---
+
+⬅️ The Response (Server to Client)
+
+After processing the request, the server sends back a response, which has a similar structure.
+
+1. **Status-Line**: A single line that says what happened.
+    - **HTTP Version**: The protocol version (e.g., `HTTP/1.1`).
+    - **Status Code**: A 3-digit code indicating the result.
+        - `2xx` (e.g., `200 OK`): Success ✅
+        - `3xx` (e.g., `301 Moved Permanently`): Redirection
+        - `4xx` (e.g., `404 Not Found`): Client-side error ❌
+        - `5xx` (e.g., `500 Internal Server Error`): Server-side error 💥
+    - **Status Text**: A human-readable message for the code (e.g., `OK`).
+
+        `HTTP/1.1 200 OK`
+
+2. **Headers** 📝: Key-value pairs that provide metadata about the response.
+    - **`Content-Type`**: The MIME type of the data in the body (e.g., `application/json`, `text/html`).
+    - **`Content-Length`**: The size of the response body in bytes.
+    - **`Cache-Control`**: Instructions on how the client should cache this response.
+    - **`Set-Cookie`**: Tells the browser to save a cookie.
+3. **Body** 📦: The actual content requested. This could be an HTML page, a JSON object, an image file, or anything else. For a successful `GET` request, this is where you find what you asked for.JSON
+
+    `{
+      "id": 123,
+      "username": "alex_jones",
+      "createdAt": "2025-07-20T07:41:12Z"
+    }`

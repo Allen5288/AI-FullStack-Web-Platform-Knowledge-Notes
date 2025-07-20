@@ -115,3 +115,11 @@ find. -name "*.log" | xargs grep "Error"
 xxx | sort | unique
 
 ```
+
+### 4. Environment variables
+
+pass configuration information into a running process without hardcoding it. They allow you to dynamically configure your applications and scripts based on the environment they're running in (e.g., development, testing, production).
+
+- **`PATH`**: The most classic example. It's a list of directories the shell searches through to find executable programs.
+- **`HOME`**: Points to the current user's home directory.
+- **Application Configuration**: This is the most common use case in full stack development. You use custom variables to configure your app.

@@ -67,9 +67,11 @@ If you're logged into `bank.com`, a malicious site could do:
 
 Fix:
 
-- Use **CSRF tokens** that are validated per request.
-- Use `SameSite=Strict` cookies.
+- Use **CSRF tokens** that are validated per request. ( Implement Anti-CSRF Tokens )
+- Use `SameSite=Strict` attribute on your session cookies.. (The browser will not send the cookie on *any* cross-site request. )
 - Require re-authentication for sensitive actions.
+- Using Post Rather than Get: Any action that changes data **must not** use a `GET` request
+- Using HTTPS anytime
 
 ---
 
