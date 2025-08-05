@@ -3,6 +3,8 @@
 
 A curated, structured collection of notes, code snippets, and best practices for modern full-stack web development, AI, system design, DevOps, and more. This repository is designed as a personal knowledge base and quick reference for interviews, projects, and continuous learning.
 
+Keep Updating!
+
 ## 📚 Repository Structure
 
 - **01 - Frontend/**
