@@ -5,7 +5,7 @@
 ### How to test a Form:
 
 - Rendering (UI elements show correctly).
-- User interactions (typing, selecting, submitting).07070707 -
+- User interactions (typing, selecting, submitting).
 - Validation and error messages.
 - Submission logic (like calling a handler or sending data).
 
