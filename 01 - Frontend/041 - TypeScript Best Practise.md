@@ -68,6 +68,7 @@ const eventExample = new InfraEvent(eventSource)
 An interface is a contract for the class. If you create a contract, then your users must comply with the contract. 
 
 - avoid empty interface, otherwise it will have no restriction
+- Use interfaces when defining objects, especially when you expect objects to have a consistent shape that could benefit from inheritance or future extension.
 
 ```tsx
 import { Stack, App } from "aws-cdk-lib";
@@ -95,6 +96,12 @@ const myS3Bucket = new S3Bucket(app, {
 })
 ```
 
+- **Type**: Use types for unions or creating more complex data structures where you don’t need extension.
+
+```tsx
+type Status = "active" | "inactive" | "pending";
+```
+
 ### 1.6 Extend Interface
 
 ```tsx
@@ -113,6 +120,35 @@ const myS3Bucket = new S3Bucket(app, {
 
 - Partial<Type>: marks all members of an input type `Type` as optional.
 - Required<Type>: opposite to partial
+
+## 1.8 Embrace `readonly` for Immutable Data Structures
+
+```tsx
+**interface User {
+    readonly id: string;
+    name: string;
+}
+
+const user: User = { id: '123', name: 'Alice' };
+// user.id = '456';  // Error: Cannot assign to 'id' because it is a read-only property**
+```
+
+## 1.9 **Use Union and Intersection Types for Flexible Type Definitions**
+
+Union types work well for defining a variable that could be one of several types
+
+Intersection types combine multiple types into one.
+
+## 1.10 **Limit Type Assertions and Use Them Judiciously**
+
+Type assertions (`as` keyword) override TypeScript’s type system, often masking potential errors. Use them sparingly and only when necessary.
+
+```tsx
+const inputElement = document.querySelector('.input') as HTMLInputElement;
+inputElement.value = 'Hello';
+```
+
+Type assertions can lead to runtime errors if used improperly, so always validate type assumptions beforehand.
 
 ## 2. Callback Types
 
@@ -325,6 +361,21 @@ In an Abstract Factory pattern, an interface is responsible for creating a facto
 }
 ```
 
+## 7. **Document Types and Functions for Better Collaboration**
+
+Good documentation enhances readability, especially in team projects. Use JSDoc comments to explain types and functions, making it easier for others to understand and work with your code.
+
+```tsx
+/**
+ * Calculates the area of a circle
+ * @param radius - The radius of the circle
+ * @returns The calculated area
+ */
+function calculateArea(radius: number): number {
+    return Math.PI * radius * radius;
+}
+```
+
 ## 50. Other small tips
 
 - Using destucturing on properties
@@ -346,3 +397,26 @@ const { objname, scope } = object;
 - **Using ESLint and Prettier**
 - using === instead of ==
 - Leverage Type Inference, But Define Explicit Types Where Needed
+- Handle Null and Undefined Safely (Types like `null` and `undefined` often cause runtime errors if not handled properly. TypeScript provides the `optional chaining` (`?.`) and `nullish coalescing` (`??`) operators to handle these cases gracefully.)
+
+```tsx
+const userName = user?.profile?.name ?? "Guest";
+```
+
+- **Use never for Exhaustive Checks(**When working with union types, use `never` to ensure exhaustive checking in `switch` cases. This ensures that if new cases are added to the union, TypeScript will throw an error if they are not handled.**)**
+
+```tsx
+type Shape = Circle | Square | Triangle;
+
+function getArea(shape: Shape) {
+  switch (shape.type) {
+    case "circle":
+      return Math.PI * shape.radius ** 2;
+    case "square":
+      return shape.side * shape.side;
+    default:
+      const _exhaustiveCheck: never = shape;
+      return _exhaustiveCheck;
+  }
+}
+```
