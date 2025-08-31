@@ -11,4 +11,4 @@
 ### Add outbound
 - add outbound url as env
 - add outbound policy
-- select the right with notification or websocket, if noticifcation, see applciaiton or watch, if app should also add the translte code
+- select the right with notification or websocket, if notification, see application or watch, if app should also add the translate code
