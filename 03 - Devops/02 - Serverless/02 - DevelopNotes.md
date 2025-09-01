@@ -1,3 +1,5 @@
+## SST Config
+
 ### Cache Config
 - add to env file, then sst config the name, host, and port add cache policy
 - add them to lambda function
@@ -12,6 +14,11 @@
 - add outbound url as env
 - add outbound policy
 - select the right with notification or websocket, if notification, see application or watch, if app should also add the translate code
+
+### SST Config Code
+```ts
+
+```
 
 
 
@@ -31,6 +38,17 @@ if (!uid) {
 
 ```
 
+## Getting From Request
+
+```ts
+const request = getStandardPlatformRequest<EmptyRequestType>(globalContextService);
+const requestBody = validateRequestInput(
+    request.body ?? {},
+    CreateAccountFromLegacySchoolsAppRequestSchema,
+);
+
+```
+
 ## Caching Usage
 
 ```ts
@@ -43,4 +61,39 @@ const cache = await this.cacheService.getString(key.toLowerCase()) as string;
 return cache ? JSON.parse(cache) as T : undefined;
 await this.cacheService.setString(key.toLowerCase(), data ? JSON.stringify(data) : 'undefined', { ttl: ttlInSeconds });
 await this.cacheService.deleteKey(key.toLowerCase());
+```
+
+## Validate
+```ts
+export const CreateOAuthClientRequestSchema = z.object({
+    clientName: z.string(),
+    redirectUris: z.array(z.string()).optional(),
+    scopes: z.array(z.enum(['manage:optus-subscription', 'create:account', 'read:account'])),
+    Authorization: z
+        .string()
+        .regex(/^Basic\s+[\d+/A-Za-z]+=*$/, 'Invalid Basic auth format')
+        .transform((header) => {
+            // Extract the base64 part after "Basic "
+            const base64Credentials = header.replace(/^Basic\s+/, '');
+            try {
+                // Decode base64
+                const decoded = Buffer.from(base64Credentials, 'base64').toString('utf8');
+
+                // Split on first colon only (passwords can contain colons)
+                const colonIndex = decoded.indexOf(':');
+                if (colonIndex === -1) {
+                    throw new Error('Invalid credentials format');
+                }
+
+                const clientId = decoded.slice(0, Math.max(0, colonIndex));
+                const clientSecret = decoded.slice(Math.max(0, colonIndex + 1));
+
+                return { clientId, clientSecret };
+            } catch {
+                throw new Error('Invalid base64 encoding');
+            }
+        }),
+});
+
+export type CreateOAuthClientRequest = z.infer<typeof CreateOAuthClientRequestSchema>;
 ```
