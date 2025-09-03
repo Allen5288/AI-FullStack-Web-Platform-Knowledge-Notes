@@ -1,3 +1,8 @@
+## Basic Things
+
+### Development notice:
+- commit message must be in the format feat(PRD...): some info or fix(PRD....): some info
+
 ## SST Config
 
 ### Cache Config
@@ -97,3 +102,10 @@ export const CreateOAuthClientRequestSchema = z.object({
 
 export type CreateOAuthClientRequest = z.infer<typeof CreateOAuthClientRequestSchema>;
 ```
+
+
+## DynamoDB
+
+- electrodb update will create a new item if it cannot find matching item, which is not good https://electrodb.dev/en/mutations/update/
+- when use set in dynamoDB, when you update, you can not make it [] to clear the array, at list one
+- for above problem, you can use list as type, once you do this, you need to ensure the list has unique ulids before updating
