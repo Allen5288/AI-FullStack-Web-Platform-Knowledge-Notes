@@ -1,0 +1,4 @@
+- n8n: [n8n.io](https://n8n.io/)
+    - N8n is a workflow orchestration tool that allows users to build integrations between different applications without necessarily writing code.
+- ollama: https://ollama.com/
+    - Ollama provides a platform for running and managing large language models locally on your machine, enabling privacy-focused AI applications.
