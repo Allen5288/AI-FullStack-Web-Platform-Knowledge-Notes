@@ -99,3 +99,98 @@ The "Intent Filter" is an entry in a core configuration file for the Android app
     
 
 This tells the Android operating system that this activity is prepared to handle HTTPS links from your specific domain that start with the `/invite` path. The `android:autoVerify="true"` flag is what triggers the secure check of your `assetlinks.json` file.
+
+---
+
+## Part 1: What You Need to Get (and Where to Fill It In)
+
+This is the information you need to collect from your team.
+
+### **For iOS 🍏**
+
+- **What you need:**
+    1. Your **Apple Team ID** (Example: `A1B2C3D4E5`)
+    2. Your app's **Bundle ID** (Example: `com.spacetalk.app`)
+- **Where to fill it:**
+    - Open the file `assets/.well-known/apple-app-site-association`.
+    - Replace `YOUR_TEAM_ID.YOUR_BUNDLE_ID` with the real values.
+        - **Example:** `"appID": "A1B2C3D4E5.com.spacetalk.app"`
+
+### **For Android 🤖**
+
+- **What you need:**
+    1. Your app's **Package Name** (Example: `co.spacetalk.app`)
+    2. Your app's **SHA-256 Certificate Fingerprint** (Example: `FA:C6:17:45:...:3E`)
+- **Where to fill it:**
+    - Open the file `assets/.well-known/assetlinks.json`.
+    - Replace `com.your.app.package_name` and `YOUR_SHA256_CERT_FINGERPRINT` with the real values.
+
+### **For the Fallback Webpages 🌐**
+
+- **What you need:**
+    1. The final URL for your app on the **Apple App Store**.
+    2. The final URL for your app on the **Google Play Store**.
+- **Where to fill it:**
+    - Open the file `assets/fallback.html`.
+    - Find the `config` section at the top of the script.
+    - Replace the placeholder URLs for `IOS_APP_STORE_LINK` and `ANDROID_PLAY_STORE_LINK_PREFIX`.
+
+---
+
+## Part 2: What You Provide to Your Mobile Engineers
+
+You can copy and paste these instructions to your iOS and Android developers.
+
+### **To Your iOS Engineer Entitlement:**
+
+"Hi, we're setting up our new deep linking service. Please add the "Associated Domains" capability in Xcode and include the following domains for each environment:"
+
+- **For Development builds:** `applinks:links.dev.cloud.spacetalk.co`
+- **For Staging builds:** `applinks:links.test.cloud.spacetalk.co`
+- **For Production builds:** `applinks:links.spacetalk.co`
+
+### **To Your Android Engineer Intent filter:**
+
+"Hi, we're setting up our new deep linking service. Please add an intent filter to the main activity in the `AndroidManifest.xml` to handle our new linking domains. Here is the configuration for each environment:"
+
+- **For Development builds, add an intent filter for:** `https://links.dev.cloud.spacetalk.co`
+- **For Staging builds, add an intent filter for:** `https://links.test.cloud.spacetalk.co`
+- **For Production builds, add an intent filter for:** `https://links.spacetalk.co`
+
+
+## Probabilistic Matching (Device Fingerprinting)
+
+This is the most common and powerful fallback to the clipboard method. It works by matching the device that clicked the link with the device that opened the app, based on a set of shared, non-personal characteristics.
+
+### The Whole Flow:
+
+1. **User Clicks the Link (in Browser):**
+    - A new user clicks the deep link: `https://links.spacetalk.co/getapp?token=abc...`
+    - The browser opens your `fallback.html` page.
+2. **Web Page Collects a "Fingerprint":**
+    - The JavaScript in `fallback.html` runs instantly. Before redirecting, it collects a set of basic, publicly available device characteristics. This "fingerprint" might include:
+        - IP Address (captured by the backend)
+        - Device OS and Version (e.g., iOS 17.5)
+        - Device Model (e.g., iPhone)
+        - Browser and Version (e.g., Mobile Safari 17.5)
+        - Language Setting (e.g., `en-US`)
+        - Screen Resolution
+3. **Web Page Sends Fingerprint to Your Backend:**
+    - The script sends a "fire-and-forget" request to a new API endpoint on your server (e.g., `POST /graph/fingerprint`).
+    - The request payload contains the fingerprint data along with the deep link URL (`https://links.spacetalk.co/...`).
+    - Your backend service, like `inviteService.ts`, receives this data and stores it in a temporary cache (like Redis) with a short expiration time (e.g., 10-15 minutes). The key might be a hash of the fingerprint, and the value is the full deep link URL.
+4. **Web Page Redirects to App Store:**
+    - Immediately after sending the fingerprint, `fallback.html` redirects the user to the App Store.
+5. **User Installs and Opens the App:**
+    - The user downloads and opens your app for the very first time.
+6. **App Collects its Own Fingerprint:**
+    - On its first launch, your native iOS app collects the *exact same set of device characteristics* from the device's perspective (OS version, device model, language, etc.).
+7. **App Asks the Backend for a Match:**
+    - The app makes an API call to your backend (e.g., `POST /graph/match-link`).
+    - The request payload contains the fingerprint data collected by the app. The backend also captures the user's IP address from this request.
+8. **Backend Finds the Match:**
+    - Your backend service receives the fingerprint from the app. It creates the same key it did in Step 3 (based on IP, OS, etc.).
+    - It looks up this key in the cache. If it finds a matching entry that was created within the last few minutes, it has found a probable match.
+    - The backend returns the full deep link URL it had stored in the cache to the app. To prevent duplicate matches, it deletes the entry from the cache after returning it.
+9. **App Navigates:**
+    - The app receives the deep link URL from the backend and can now parse it to get the token and navigate the user to the correct screen.
