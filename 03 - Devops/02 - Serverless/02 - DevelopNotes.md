@@ -109,3 +109,13 @@ export type CreateOAuthClientRequest = z.infer<typeof CreateOAuthClientRequestSc
 - electrodb update will create a new item if it cannot find matching item, which is not good https://electrodb.dev/en/mutations/update/
 - when use set in dynamoDB, when you update, you can not make it [] to clear the array, at list one
 - for above problem, you can use list as type, once you do this, you need to ensure the list has unique ulids before updating
+
+
+
+## Multiple Services
+- commonLib: for common code, also for the aws sdk client, so that it can be shared across services.
+  - awsClient.ts: for aws sdk client
+  - error.ts: for common error class
+  - mesh function: for calling other services
+- notificationService: for handling notifications.
+- authService: for auth related functionality.
