@@ -197,3 +197,13 @@ This is the most common and powerful fallback to the clipboard method. It works 
     - The backend returns the full deep link URL it had stored in the cache to the app. To prevent duplicate matches, it deletes the entry from the cache after returning it.
 9. **App Navigates:**
     - The app receives the deep link URL from the backend and can now parse it to get the token and navigate the user to the correct screen.
+
+
+## Debug
+
+- The cloudFront - Apple CDN Cache - We use it
+  - The Apple CDN caches can be check from : https://app-site-association.cdn-apple.com/a/v1/linkd.spacetalk.co, the cache time is max-age, so if you update the file, you need to wait for max-age time to see the change., then refresh to see whether it is updated.
+  - Apple .well-known/apple-app-site-association file validator: https://branch.io/resources/aasa-validator/
+  - this file should be served with Content-Type: application/json
+
+- After cache clean, uninstall the app from device, then re-install the app, otherwise, it will not trigger the apple check again.
