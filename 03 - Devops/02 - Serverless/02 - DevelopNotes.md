@@ -119,3 +119,8 @@ export type CreateOAuthClientRequest = z.infer<typeof CreateOAuthClientRequestSc
   - mesh function: for calling other services
 - notificationService: for handling notifications.
 - authService: for auth related functionality.
+
+
+## Lambda
+
+- redirect methods for url
