@@ -4,8 +4,6 @@
 
 Cowork is a mode inside Claude Desktop for **multi-step, long-running work** that produces real files and interacts with your existing tools. It sits alongside Chat and Code in the mode selector at the top of the app.
 
-> **Requirement:** Paid plan + up-to-date desktop app.
-
 ---
 
 ## Core Capabilities
