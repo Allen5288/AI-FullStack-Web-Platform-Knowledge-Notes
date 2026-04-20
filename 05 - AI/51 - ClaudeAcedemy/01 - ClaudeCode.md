@@ -52,6 +52,16 @@ If the command doesn't work, restart your terminal. Navigate to your project dir
 
 ---
 
+## Getting Started with a New Project
+
+When you first start Claude in a new project, run the `/init` command. This tells Claude to analyze your entire codebase and understand:
+
+- The project's purpose and architecture
+- Important commands and critical files
+- Coding patterns and structure
+
+---
+
 ## Core Workflow: EPCC
 
 ### 1. **Explore**
@@ -72,6 +82,56 @@ Review and push your code to start on the next feature
 
 ---
 
+## Using Screenshots for Precise Communication
+
+One of the most effective ways to communicate with Claude is through screenshots. When you want to modify a specific part of your interface, taking a screenshot helps Claude understand exactly what you're referring to.
+
+- **Paste a screenshot** into Claude using `Ctrl+V` (not `Cmd+V` on macOS)
+- This keyboard shortcut is specifically designed for pasting screenshots into the chat interface
+- Once pasted, you can ask Claude to make specific changes to that area of your application
+
+---
+
+## Planning Mode
+
+For complex tasks that require extensive research across your codebase, enable Planning Mode. This makes Claude do thorough exploration before implementing changes.
+
+**Enable:** Press `Shift + Tab` twice (or once if you're already auto-accepting edits)
+
+In Planning Mode, Claude will:
+
+- Read more files in your project
+- Create a detailed implementation plan
+- Show you exactly what it intends to do
+- Wait for your approval before proceeding
+
+This gives you the opportunity to review the plan and redirect Claude if it missed something important.
+
+---
+
+## Thinking Modes
+
+Claude offers different levels of reasoning through "thinking" modes, allowing Claude to spend more time reasoning about complex problems before providing solutions.
+
+| Mode | Description |
+| --- | --- |
+| "Think" | Basic reasoning |
+| "Think more" | Extended reasoning |
+| "Think a lot" | Comprehensive reasoning |
+| "Think longer" | Extended time reasoning |
+| "Ultrathink" | Maximum reasoning capability |
+
+Each mode gives Claude progressively more tokens to work with, allowing for deeper analysis.
+
+### When to Use Planning vs Thinking
+
+| Feature | Best For |
+| --- | --- |
+| **Planning Mode** | Tasks requiring broad codebase understanding, multi-step implementations, changes affecting multiple files |
+| **Thinking Mode** | Complex logic problems, debugging difficult issues, algorithmic challenges |
+
+---
+
 ## Context Management
 
 ### Manual Compaction
@@ -89,6 +149,22 @@ Frees up context space while keeping memory of previous work
 ```
 
 Completely start from scratch with no memory of previous session
+
+### Escape / Double-Tap Escape
+
+- **Escape** — Cancel the current Claude response
+- **Double-tap Escape** — Cancel and clear current input
+
+### Conversation Control Best Practices
+
+These techniques are particularly valuable during:
+
+- Long-running conversations where context can become cluttered
+- Task transitions where previous context might be distracting
+- Situations where Claude repeatedly makes the same mistakes
+- Complex projects where you need to maintain focus on specific components
+
+Use `Escape`, double-tap `Escape`, `/compact`, and `/clear` strategically to keep Claude focused and productive.
 
 ### Check Context State
 
@@ -173,6 +249,37 @@ View connected servers, check status, disable servers you don't need
 2. **User** — Available across all your projects
 3. **Project** — Uses `.mcp.json` file checked into version control for team consistency
 
+**Example: Playwright MCP Server**
+
+Playwright gives Claude the ability to control a web browser, opening up powerful possibilities for web development workflows.
+
+Install:
+
+```
+claude mcp add playwright npx @playwright/mcp@latest
+```
+
+To pre-approve permissions, edit `.claude/settings.local.json`:
+
+```json
+{
+  "permissions": {
+    "allow": ["mcp__playwright"],
+    "deny": []
+  }
+}
+```
+
+Note the double underscores in `mcp__playwright`.
+
+**Other MCP Servers to Explore:**
+
+- Database interactions
+- API testing and monitoring
+- File system operations
+- Cloud service integrations
+- Development tool automation
+
 ### 4. **Hooks**
 
 Deterministic commands that run at specific points in Claude Code's lifecycle — they **always run**.
@@ -195,16 +302,42 @@ Deterministic commands that run at specific points in Claude Code's lifecycle �
 
 **Configuration:**
 
-- Use `/hooks` command inside Claude Code
-- Or edit `settings.json` directly
-- Check into repo for team consistency
+Hooks are defined in Claude settings files. You can add them to:
 
-**Common Use Cases:**
+- **Global** — `~/.claude/settings.json` (affects all projects)
+- **Project** — `.claude/settings.json` (shared with team)
+- **Project (not committed)** — `.claude/settings.local.json` (personal settings)
 
-- Auto-formatting with Prettier after edits
-- Logging all executed commands
-- Blocking modifications to production files
-- Sending task completion notifications
+You can also use the `/hooks` command inside Claude Code.
+
+**Practical Applications:**
+
+- **Code formatting** — Automatically format files after Claude edits them
+- **Testing** — Run tests automatically when files are changed
+- **Access control** — Block Claude from reading or editing specific files
+- **Code quality** — Run linters or type checkers and provide feedback to Claude
+- **Logging** — Track what files Claude accesses or modifies
+- **Validation** — Check naming conventions or coding standards
+
+**Key insight:** `PreToolUse` hooks give you control over what Claude *can* do, while `PostToolUse` hooks let you enhance what Claude *has* done.
+
+### 5. **Custom Commands with Arguments**
+
+Custom commands can accept arguments using the `$ARGUMENTS` placeholder, making them flexible and reusable.
+
+---
+
+## GitHub Integration
+
+### Setting Up
+
+Run `/install-github-app` in Claude to walk through the setup process:
+
+- Install the Claude Code app on GitHub
+- Add your API key
+- Automatically generate a pull request with the workflow files
+
+The generated PR adds two GitHub Actions to your repository. Once merged, you'll have the workflow files in your `.github/workflows` directory.
 
 ---
 
@@ -244,12 +377,17 @@ Keep your context window clean by:
 
 ## Quick Reference
 
-| Feature | Command | Purpose |
+| Feature | Command / Shortcut | Purpose |
 | --- | --- | --- |
+| Initialize Project | `/init` | Analyze codebase and auto-generate CLAUDE.md |
 | Create Subagent | `/agents` | Set up a new specialized agent |
 | Manage MCP | `/mcp` | View, add, or disable MCP servers |
+| Add MCP Server | `claude mcp add <name> <cmd>` | Add an MCP server |
 | Configure Hooks | `/hooks` | Set up deterministic automation |
-| Initialize CLAUDE.md | `/init` | Auto-generate project configuration |
 | Compact Context | `/compact` | Free up context space |
 | Clear Session | `/clear` | Start fresh with no memory |
 | Check Context | `/context` | View context usage and breakdown |
+| Planning Mode | `Shift + Tab` (×2) | Enable thorough exploration before implementation |
+| Paste Screenshot | `Ctrl + V` | Paste a screenshot into the chat |
+| Cancel Response | `Escape` | Cancel current Claude response |
+| GitHub Setup | `/install-github-app` | Set up GitHub Actions integration |
