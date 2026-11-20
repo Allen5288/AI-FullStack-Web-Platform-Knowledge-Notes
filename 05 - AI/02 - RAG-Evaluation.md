@@ -81,3 +81,8 @@ change does not ship — even if the demo looked better.
 - 2026-11-22: a small Python evaluation script (no LLM judge yet —
   exact-match + human rubric first).
 - Later: LLM-as-judge, and when it is (and is not) trustworthy.
+
+## 2026-11-20 — Browser test
+
+Browser session test: this section was added via the GitHub web UI, not via the API, to check whether the signed-in session persists without a new two-factor prompt. Content to follow in the next daily update.
+
