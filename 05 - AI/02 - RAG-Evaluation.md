@@ -268,6 +268,122 @@ does not ship.
 
 ### What I will add next in this file
 
-- 2026-11-23: LLM-as-judge — when it helps, when it lies, and how to
-  calibrate it against the human rubric in this file.
-- Later: a combined evaluation report — one command, both scores.
+- 2026-11-24: a combined evaluation report — one command, both scores
+  (Recall@5 + faithfulness), with the judge's verdicts alongside the
+    human rubric.
+  - Later: tracking scores over time — when a swap improves Recall@5
+    but costs faithfulness.
+
+## 2026-11-23 — Part 4: LLM-as-judge — when it helps, when it lies, and how to calibrate it
+
+Parts 2 and 3 gave us two scores a human can compute: Recall@5 for
+retrieval, and a keyword-overlap triage plus a human rubric for
+faithfulness. Both need a person in the loop for every answer. That
+does not scale to hundreds of questions — which is where an
+LLM-as-judge comes in: a second model grades the answers against the
+same rubric. It is useful, but only if you know where it lies.
+
+### What the judge is for
+
+- **Regression checks at scale.** Re-run the golden set after a
+  prompt or model change and let the judge flag the answers that
+  changed verdict. A human then reads only the flagged ones.
+- **Ranking, not truth.** The judge is good at "answer A is more
+  faithful than answer B". It is bad at "this answer is correct".
+- **It never replaces the human rubric for safety.** In medical
+  answers, a `must_not` hit or a contradicted claim is a fail no
+  matter what the judge says — those are checked by the deterministic
+  rules in Part 3, not by a model.
+
+### The four ways a judge lies
+
+1. **Verbosity bias.** Longer answers score higher, even when the
+   extra sentences add nothing. Mitigate: ask the judge to grade
+   each claim separately, not the answer as a whole.
+2. **Self-preference.** A model rates its own family's output
+   higher. Mitigate: judge with a different model family than the
+   one that generated the answer — if LLaMA 3 generated it, do not
+   let LLaMA 3 judge it.
+3. **Position bias.** Given two answers to compare, the judge
+   prefers whichever is shown first. Mitigate: run the comparison
+   twice, swapping the order, and only trust a verdict that agrees
+   both ways.
+4. **Grading without evidence.** A judge will happily say
+   "supported" without ever pointing at the chunk. Mitigate: force
+   the judge to quote the supporting chunk text. No quote, no pass.
+
+### The judge prompt — rubric in the prompt, quote required
+
+Put the rubric from Part 3 in the prompt, one claim at a time, and
+require a quote for every "supported" verdict:
+
+```text
+You are grading one factual claim from a RAG answer against the
+retrieved chunks. Reply with exactly one verdict and the evidence.
+
+Claim: <one sentence from the answer>
+Retrieved chunks:
+<chunk 1 text>
+<chunk 2 text>
+
+Verdict: supported | paraphrased | unsupported | contradicted
+Quote: <the exact chunk sentence that supports or contradicts the
+claim, or "none">
+Reason: <one sentence>
+
+Rules:
+- "supported" needs a quote that says the same thing.
+- "paraphrased" means the same meaning in different words — quote
+  the chunk and let a human confirm it.
+- If no chunk backs the claim, say "unsupported", even if the claim
+  sounds true. General knowledge does not count.
+- Never use knowledge outside the chunks.
+```
+
+One claim per judge call keeps the verdicts honest: a whole-answer
+grade hides the one bad sentence. It costs more calls, but the
+golden set is only 20 questions — that is the right trade.
+
+### Calibrating the judge against the human rubric
+
+A judge you have never measured is a guess. Calibrate it on the
+same 20 golden answers a human already graded in Part 3:
+
+1. Run the judge over every claim in the 20 answers.
+2. **Agreement rate** = claims where judge and human agree, divided
+   by all claims. Aim for 0.85 or above before trusting the judge
+   on new questions.
+3. Look at the disagreements, not just the rate. If the judge calls
+   "supported" what the human calls "unsupported", the prompt is too
+   lenient — add a worked example of a failing claim. If it is too
+   strict, it is usually punishing paraphrase; add an example of a
+   legitimate paraphrase.
+4. Re-calibrate whenever the judge model or the rubric changes.
+   A new model is a new judge — its old calibration does not carry
+   over.
+
+```python
+def agreement_rate(rows: list[dict]) -> float:
+    # rows: {"claim": ..., "human": "supported", "judge": "supported"}
+    agreed = sum(1 for r in rows if r["human"] == r["judge"])
+    return agreed / len(rows) if rows else 0.0
+```
+
+### Rules for using a judge in this repo
+
+- The judge grades; the deterministic checks in Part 3 decide
+  safety. A `must_not` hit fails the answer whatever the judge says.
+- One judge, one model, one rubric version per run — record all
+  three with the score, or the number is meaningless next month.
+- Spot-check 20% of judged answers by hand every run, including
+  some the judge passed. A judge that is never checked drifts.
+- If the judge and the human disagree on a claim, the human wins,
+  and the disagreement goes into the calibration set.
+
+### What this sets up
+
+With Recall@5 (Part 2), faithfulness triage (Part 3) and a calibrated
+judge (this part), the evaluation loop is complete: retrieval is
+scored by a number, generation is scored by a rubric, and the judge
+lets the same checks run at a scale a human cannot. The next step is
+to run all of it with one command and keep the scores over time.
