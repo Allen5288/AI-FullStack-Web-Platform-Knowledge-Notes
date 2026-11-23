@@ -387,3 +387,97 @@ judge (this part), the evaluation loop is complete: retrieval is
 scored by a number, generation is scored by a rubric, and the judge
 lets the same checks run at a scale a human cannot. The next step is
 to run all of it with one command and keep the scores over time.
+
+## 2026-11-24 — Part 5: one command, kept over time — the combined evaluation run
+
+Parts 2–4 built the pieces: Recall@5 on the golden set, a faithfulness triage script, and a calibrated LLM-as-judge. A set of scripts nobody runs is not an evaluation loop — it is a folder. This part wires the three checks into one command and keeps the scores over time, so a regression is a number you can point at, not a feeling.
+
+### The runner — save as `eval/run_eval.py`
+
+One command runs all three checks in order and writes one JSON result file. Retrieval first — it is cheapest and fails fastest — then faithfulness, then the judge only if the first two pass. There is no point paying a judge to grade answers built on bad retrieval.
+
+```python
+# eval/run_eval.py — run from the repo root:
+#   python eval/run_eval.py --golden eval/golden.jsonl --out eval/runs/2026-11-24.json
+# Exit code 0 = all gates passed; 1 = a gate failed.
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+GATES = {"recall_at_5": 0.80, "faithfulness_failures": 0, "judge_agreement": 0.85}
+
+def run(cmd: list[str]) -> dict:
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr, file=sys.stderr)
+        sys.exit(1)
+    return json.loads(result.stdout)
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--golden", default="eval/golden.jsonl")
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+
+    recall = run(["python", "eval/score_recall.py", "--golden", args.golden])
+    faith = run(["python", "eval/check_faithfulness.py", "--golden", args.golden])
+    judge = run(["python", "eval/judge.py", "--golden", args.golden])
+
+    result = {
+        "date": Path(args.out).stem,
+        "recall_at_5": recall["recall_at_5"],
+        "faithfulness_failures": faith["failures"],
+        "judge_agreement": judge["agreement_rate"],
+        "model": judge["model"],
+        "rubric_version": "v1",
+    }
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out).write_text(json.dumps(result, indent=2))
+    failed = (
+        result["recall_at_5"] < GATES["recall_at_5"]
+        or result["faithfulness_failures"] > GATES["faithfulness_failures"]
+        or result["judge_agreement"] < GATES["judge_agreement"]
+    )
+    print(json.dumps(result, indent=2))
+    print("GATES FAILED" if failed else "ALL GATES PASSED")
+    sys.exit(1 if failed else 0)
+
+if __name__ == "__main__":
+    main()
+```
+
+Two rules for the sub-scripts: each one prints exactly one JSON object to stdout (logs go to stderr), and the gate values live in one place (`GATES`), so a threshold change is a one-line diff with the reason in the commit message.
+
+### The score history — keep it in the repo
+
+A single run's numbers are trivia; the trend is the signal. Keep the JSON result files (`eval/runs/YYYY-MM-DD.json`) and one table in this file, one row per run:
+
+| Date | Recall@5 | Faithfulness failures | Judge agreement | Model | Note |
+|---|---|---|---|---|---|
+| 2026-11-24 | _fill in from the first run_ | | | | Baseline — first combined run |
+
+- Never edit an old row. If a run was bad, the row stays bad and the fix gets a new row — rewriting history hides regressions.
+- A run is only comparable to another run on the same golden set, same rubric version, same judge model. If any of those change, note it in the "Note" column and treat the trend as restarted.
+- Keep the JSON files too, so anyone can re-check a row without re-running the model.
+
+### Reading a regression — which half broke?
+
+| Symptom | Likely cause | Fix in |
+|---|---|---|
+| Recall@5 drops, faithfulness holds | Chunking or embedding changed; a relevant chunk fell out of the top 5 | Part 2 — re-check chunk size, re-run the golden set per question |
+| Recall@5 holds, faithfulness failures rise | Generation changed (new model, new prompt) — the model is adding claims | Parts 3–4 — tighten the prompt, re-calibrate the judge |
+| Judge agreement drops below 0.85 | Judge model or rubric changed, or the judge is grading a new answer style | Part 4 — re-calibrate on the human-graded set before trusting it |
+| Everything drops at once | The golden set or the documents changed — check what was ingested first | Part 1 — the data, not the model |
+
+### When to run it
+
+- After any change to chunking, embeddings, the prompt, or the model — before merging.
+- Weekly on the unchanged system, to catch silent drift (a provider changing a model behind the same name is the classic one).
+- Before any provider swap decision — the swap ships only if the new stack's row is no worse than the old stack's row on the same golden set.
+
+### What this finishes
+
+The RAG evaluation topic is now complete in this file: Part 1 (what to measure), Part 2 (retrieval scoring), Part 3 (faithfulness), Part 4 (LLM-as-judge), Part 5 (one command, kept over time). The next knowledge topic starts a new file.
