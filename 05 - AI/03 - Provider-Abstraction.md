@@ -157,9 +157,116 @@ server-side with the correlation id; return the generic shape.
   usage, but the cost math still lives in `eval/cost.py` — update
   the price table when a provider changes its price.
 
+## 2026-11-26 — Part 2: retries with back-off, and fallback to a second provider
+
+Part 1 mapped every provider error onto one `LLMError.kind`. That
+mapping only pays off if the caller knows what to do with each kind.
+Today: the retry and fallback policy that sits on top of the client.
+
+### Retry only what retrying can fix
+
+| `LLMError.kind` | Retry? | Why |
+|---|---|---|
+| `rate_limited` | Yes — after a back-off | The provider is throttling, not refusing; waiting helps |
+| `timeout` / `provider_error` | Yes — once or twice | Transient by nature; a second try often succeeds |
+| `auth` | No | A bad key is still bad in 30 seconds; retrying is noise |
+| `blocked` | No | The content filter will block the same prompt again |
+
+Retrying `auth` or `blocked` does not fix anything — it burns
+tokens, fills logs, and can trip abuse limits. The `kind` field
+exists so this decision is one `if`, not a string match on provider
+error bodies.
+
+### Exponential back-off with jitter
+
+Wait longer after each failure, and add randomness so a fleet of
+retries does not hammer the provider in lockstep:
+
+```python
+import random
+
+RETRYABLE = {"rate_limited", "timeout", "provider_error"}
+
+def backoff_seconds(attempt: int, base: float = 1.0, cap: float = 30.0) -> float:
+    # attempt 0 -> ~1s, 1 -> ~2s, 2 -> ~4s, capped at 30s, plus jitter
+    delay = min(cap, base * (2 ** attempt))
+    return delay * random.uniform(0.5, 1.5)
+```
+
+Rules: cap the delay (30 s is enough for a chat answer; longer and
+the user has left), cap the attempts (3 tries total is the default —
+after that, fail the question, not the run), and always jitter. A
+fixed 2 s / 4 s / 8 s ladder across many concurrent users becomes a
+thundering herd at exactly 8 s; jitter spreads it out.
+
+### The retrying wrapper — policy outside the adapters
+
+```python
+import time
+
+class RetryingClient(LLMClient):
+    """Wraps any LLMClient with retry + fallback. No provider code here."""
+
+    def __init__(self, primary: LLMClient, fallback: LLMClient | None = None,
+                 max_attempts: int = 3):
+        self._primary = primary
+        self._fallback = fallback
+        self._max_attempts = max_attempts
+
+    def generate(self, messages, *, temperature=0.0, max_tokens=512, json_mode=False):
+        client, attempts = self._primary, 0
+        while True:
+            try:
+                return client.generate(messages, temperature=temperature,
+                                       max_tokens=max_tokens, json_mode=json_mode)
+            except LLMError as exc:
+                attempts += 1
+                if exc.kind not in RETRYABLE or attempts >= self._max_attempts:
+                    if client is self._primary and self._fallback is not None:
+                        # One switch to the fallback, then its own retries.
+                        client, attempts = self._fallback, 0
+                        continue
+                    raise
+                time.sleep(backoff_seconds(attempts - 1))
+```
+
+Three decisions baked in here:
+
+- **Fallback is a second provider, not a second try.** Groq
+  rate-limited at 429 → try Azure when it is its turn. A fallback
+  to the same provider is just a fourth retry with extra steps.
+- **Fallback happens once.** If Azure also fails, the question
+  fails with a clean error. A chain of fallbacks hides which
+  provider is actually broken and makes cost unpredictable.
+- **The wrapper knows nothing about providers.** It takes two
+  `LLMClient`s. Swapping Groq for Azure in either slot is a config
+  change in `make_client`, not a code change here.
+
+### What to measure
+
+Log every retry and fallback with the correlation id, the kind, and
+the attempt number. Two numbers to watch in eval:
+
+- **Retry rate** — retries per 100 questions. A sudden rise means
+  the provider is throttling you (or your traffic grew past the
+  tier), not that your code broke.
+- **Fallback rate** — how often the second provider answers. If it
+  is above ~5%, the primary is the wrong tier or the wrong
+  provider; fix the plan, not the retry count. And remember the
+  fallback answers cost fallback prices — the cost math in
+  `eval/cost.py` needs both providers' prices.
+
+### What this does not solve
+
+- **Retries cannot fix quality.** A model that answers badly on the
+  first try answers badly on the third. Re-run the golden set; do
+  not retry your way to a good answer.
+- **A fallback is not a load balancer.** Sending half your traffic
+  to each provider on purpose is a routing decision with its own
+  cost and quality trade-offs — that is a design decision of its
+  own, not a side effect of error handling.
+
 ### What I will add next in this file
 
-- Part 2 (next): retries with exponential back-off, and fallback
-  to a second provider when the first is rate-limited.
 - Part 3: structured outputs across providers — JSON mode vs
   function calling vs "ask for JSON and validate it yourself".
