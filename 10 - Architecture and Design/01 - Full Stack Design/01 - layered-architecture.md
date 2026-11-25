@@ -88,9 +88,95 @@ more instances, a bigger Cosmos DB throughput, a partitioned queue —
 and the domain never notices. If someone sells you layers as a
 scaling strategy, they are selling the wrong thing.
 
+## 2026-11-26 — Vertical slices: when a feature owns its own path
+
+The 22 Nov note made layers the default shape: dependencies point
+inward, the domain knows nothing about the outside world. That is
+still the default. But layers have a cost the note named honestly —
+a one-line change can touch three files — and when a system grows
+by adding features, that cost compounds. Vertical slices are the
+alternative shape, and the choice between them is a real design
+decision, not a style preference.
+
+### What a slice is
+
+One feature, end to end, in one place: the HTTP handler, the
+validation, the business rule, the database call, and the response
+shape all live together, usually in one folder per feature.
+
+```text
+features/
+  register-user/
+    handler.py      # parse input, return 202
+    validate.py     # email / name rules for this feature
+    store.py        # Cosmos DB write for this feature
+  book-inspection/
+    handler.py
+    validate.py
+    store.py
+```
+
+There is no shared application layer to cross and no domain layer
+to consult. A new feature is a new folder; deleting a feature is
+deleting a folder. That is the whole appeal — and the whole risk.
+
+### When slices beat layers
+
+| Situation | Better shape | Why |
+|---|---|---|
+| Features ship and change independently | Slices | A change to booking never touches registration code |
+| One team, one deployable, fast iteration | Slices | Less indirection; a feature is readable in one sitting |
+| Rules must stay identical across features | Layers | One domain layer is one place where the rule lives |
+| Many features share one core concept (a user, an order) | Layers | Slices duplicate the core concept until they drift apart |
+| A framework or database swap is planned | Layers | The swap touches the infrastructure layer, not every slice |
+
+The pattern in our own work: the BookingApi (NodeJS) and the Real
+Estate Enquiry Assistant (AI Apps) are both slice-shaped in
+practice — each endpoint owns its validation and its store call —
+because each is a small service growing feature by feature. The
+Async User Register API is layered, because the same registration
+rules are shared by the HTTP trigger and the queue trigger, and the
+rule must not exist twice.
+
+### The failure mode: shared rules drift
+
+Slices fail the same way every time. Two features both validate an
+email; one day the rule changes (plus-addressing, a new domain
+blocklist) and only one slice is updated. Now the same input is
+valid in one feature and invalid in another, and the bug report
+reads like the system is lying.
+
+The fix is not to abandon slices — it is to be deliberate about
+what is shared:
+
+- **Share the rule, not the layer.** A tiny shared module —
+  `shared/validation.py`, one function `is_valid_email` — used by
+  every slice. The rule lives once; the slices stay independent.
+  This is exactly what `shared/models.py` does for the Azure
+  Functions register API.
+- **Share by extraction, not by anticipation.** Do not build the
+  shared module on day one. Build the second slice, notice the
+  duplicated rule, extract it then. Premature sharing is how a
+  slice design quietly becomes a layered design with worse names.
+- **Audit the drift.** A `grep` for the rule's keywords across
+  slices once a month catches the copy that never got updated.
+  Cheap, unglamorous, and it works.
+
+### The decision rule
+
+Start layered when the system has a core concept that many
+features will share (users, orders, listings). Start sliced when
+the system is a collection of features that happen to share a
+deployable (a salon booking API, a set of admin tools). Either way,
+write the choice down — one ADR, one paragraph, naming what would
+make you change your mind. The wrong shape is survivable; the
+undocumented shape is not, because the next person cannot tell a
+deliberate choice from an accident.
+
 ### What I will add next in this folder
 
-- 2026-11-23: 02 - AI Design — agent orchestration patterns: when an
-  agent needs tools, memory, and a human in the loop.
-- Later: 03 - Security Design (threat modelling a public API), then
-  04 - Cloud Design (multi-region and cost).
+- 2026-11-27: 02 - AI Design — multi-agent patterns in depth
+  (supervisor/workers vs peer agents, shared state).
+- Later: a second pass on 03 - Security Design and 04 - Cloud
+  Design — both covered once already; next time one topic each,
+  in more depth.
