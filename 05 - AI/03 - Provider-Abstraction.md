@@ -266,7 +266,154 @@ the attempt number. Two numbers to watch in eval:
   cost and quality trade-offs — that is a design decision of its
   own, not a side effect of error handling.
 
+## 2026-11-27 — Part 3: structured outputs across providers — JSON mode, function calling, or validate it yourself
+
+Part 1 built one client interface with a `json_mode` flag. Part 2
+put retries on top. Today: what that flag is actually for — getting
+a JSON object back from a model that only promises text — and the
+three ways to do it, because they fail differently and cost
+differently.
+
+### The problem: downstream code needs an object, the model returns text
+
+The Real Estate assistant (commit 5) will need this for real: turn
+"3 bed house in The Ponds under $1.2m" into
+`{"suburb": "The Ponds", "min_beds": 3, "max_price": 1200000}` and
+hand those filters to the retriever. If the model answers in prose
+— "You'd like a 3-bedroom house…" — the retriever cannot use it.
+The answer must be parseable, every time, or the feature does not
+work. Three approaches, in order of strength.
+
+### Approach 1: JSON mode — valid JSON, not a valid schema
+
+Ask the provider for JSON and it returns JSON. Both providers in
+Part 1 support it (`response_format={"type": "json_object"}`), which
+is why `json_mode` is already in the shared interface:
+
+```python
+result = client.generate(
+    [ChatMessage("system", "Extract the search filters as JSON."),
+     ChatMessage("user", "3 bed house in The Ponds under $1.2m")],
+    json_mode=True,
+)
+filters = json.loads(result.text)  # parses — but is it the right shape?
+```
+
+What JSON mode guarantees: the output parses as JSON. What it does
+**not** guarantee: the right keys, the right types, or true values.
+`{"suburb": "The Ponds", "min_beds": "three"}` is valid JSON and
+useless. JSON mode removes the syntax problem only — you still need
+the validation in approach 3. Its other limit: it is a request, not
+a contract. A provider without JSON mode (or an older model) ignores
+it, so code that depends on the flag alone breaks on the next swap.
+Treat JSON mode as a hint that makes approach 3 succeed more often,
+never as the validation itself.
+
+### Approach 2: function calling / tool use — the strongest guarantee
+
+Give the model a function schema and it returns structured arguments
+instead of text:
+
+```json
+{"name": "search_listings",
+ "arguments": {"suburb": "The Ponds", "min_beds": 3, "max_price": 1200000}}
+```
+
+This is the strongest of the three: the provider validates the
+arguments against the schema before returning them, so wrong types
+mostly never arrive. The cost is that it does **not** fit the narrow
+interface from Part 1 — Groq and Azure express tools differently,
+and the response shape (tool calls, not text) is a second return
+path. That is why it stays out of `LLMClient`: put it behind a
+capability flag (`client.supports_tools`), or in a separate
+`ToolClient`, and only use it where the schema is the product — an
+agent calling tools, not a chat answer. Do not bend the shared
+interface around one provider's tool format; the next swap will
+break it.
+
+### Approach 3: ask for JSON and validate it yourself — works everywhere
+
+The portable approach, and the default for this codebase: prompt for
+JSON, parse it, validate it against a schema in your own code, and
+treat failure as a normal error, not an exception:
+
+```python
+import json
+from pydantic import BaseModel, Field, ValidationError
+
+class SearchFilters(BaseModel):
+    suburb: str | None = None
+    min_beds: int | None = Field(default=None, ge=1, le=10)
+    max_price: int | None = Field(default=None, gt=0)
+    status: str | None = Field(default=None, pattern="^(sale|rent)$")
+
+def parse_structured(text: str) -> SearchFilters:
+    """Parse model output into validated filters. Raises ValueError
+    with a message the repair retry can use — never returns a
+    half-parsed object."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("JSON is not an object")
+    try:
+        return SearchFilters(**data)
+    except ValidationError as exc:
+        raise ValueError(f"wrong shape: {exc.errors()}") from exc
+```
+
+Three failure kinds, three different responses:
+
+| Failure | Example | Response |
+|---|---|---|
+| Not JSON at all | Prose, or JSON wrapped in markdown fences | Strip fences, retry once with the parse error in the prompt |
+| JSON, wrong shape | `min_beds: "three"`, unknown keys | One repair retry, then fail the question |
+| JSON, valid shape, wrong values | `min_beds: 99`, `max_price: -5` | No retry — the model understood the shape and still chose a nonsense value; fail the question |
+
+Rules that follow:
+
+- **Validate with a schema, not with `if` chains.** Pydantic
+  gives you types, ranges and unknown-field rejection in one place,
+  and the error message is good enough to feed back to the model.
+  Unknown fields are rejected, not ignored — a model inventing a
+  `moat: true` field should be told, not silently accommodated.
+- **Defaults live in code, not in the model.** `status` defaults to
+  `None` (no filter) in the schema; the model never decides what
+  "no filter" means.
+- **One repair retry, then stop.** Feed the validation error back
+  ("`min_beds` must be an integer 1–10, you gave `\"three\"`") and
+  try once. A model that cannot produce the schema in two tries
+  will not on the third, and each retry costs tokens and latency.
+  Log the raw text on failure — it is eval data (Part 4 of the RAG
+  notes: one failure class is "structured output failed").
+- **Never fall back to a guessed object.** If parsing fails, the
+  answer is "I could not understand the filters — please tell me
+  the suburb and budget", not a filter object built from a regex
+  over the model's prose. A guessed filter returns the wrong
+  listings, which is worse than no listings.
+
+### Which approach, when
+
+| Situation | Use |
+|---|---|
+| One object out of a chat answer, any provider | Approach 3 (validate yourself) + JSON mode as a hint |
+| The schema is the product (agent tools, form filling) | Approach 2 (function calling), behind a capability flag |
+| A provider with no JSON mode at all | Approach 3 only — it is the only one that works everywhere |
+
+### What this does not solve
+
+- **JSON mode does not stop hallucinated values.** A model can
+  return perfectly valid JSON with a price no listing has. Schema
+  validation checks shape; faithfulness (RAG notes, Part 3) checks
+  facts. Both are needed — shape without facts is a confident lie
+  in brackets.
+- **Structured output does not fix a bad prompt.** If the model
+  cannot tell a suburb from a street, no format flag will teach
+  it. That is a prompt and eval problem, not a parsing problem.
+
 ### What I will add next in this file
 
-- Part 3: structured outputs across providers — JSON mode vs
-  function calling vs "ask for JSON and validate it yourself".
+- Part 4: streaming responses and token budgets — partial output,
+  cancelling a runaway generation, and why streaming changes the
+  retry story from Part 2.
