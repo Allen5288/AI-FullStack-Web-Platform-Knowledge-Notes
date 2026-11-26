@@ -116,7 +116,115 @@ Revisit when monthly active users pass 10,000 or a customer
 contract demands it." A decision with a revisit trigger is a
 design; a decision without one is drift.
 
+## 2026-11-27 — Part 2: data partitioning and cell-based architecture — making failures small
+
+Part 1 said a failure should take a slice of the system, not the
+whole thing, and named bulkheads and cells. Today those two ideas
+get their design: how to split the data so one tenant, one key or
+one deploy cannot hurt everyone else.
+
+### Partitioning: choose the key by the query, not by the entity
+
+A partition key decides which physical slice of the store a record
+lives on. Cosmos DB and DynamoDB both route by it, and both punish
+the wrong choice the same way: queries that do not include the key
+become cross-partition scans — slow, expensive, and throttled first.
+
+- **Pick the key from the read pattern.** The Register API reads a
+  user by `user_id` and lists nothing by email, so `user_id` is the
+  partition key. If the app read users by email ten times a day,
+  email would be a second index, not the partition key — the key
+  serves the hot path.
+- **The key must spread writes.** A key with one huge value — one
+  tenant with 90% of the traffic, one "system" record everyone
+  writes — is a hot partition: one physical slice takes all the
+  writes while the others sit idle, and the store throttles the hot
+  one. The fix is write sharding: append a synthetic suffix
+  (`tenant#1 … tenant#10`) and spread that tenant's writes across
+  ten keys, then fan out the read. Ugly, and cheaper than a hot
+  partition at scale.
+- **Time is a partition key too.** Logs, events and bookings split
+  naturally by month: old partitions go cold (cheaper storage),
+  retention is "drop the partition", and a bad day's data is one
+  slice, not the whole table. The BookingApi's `data/bookings.json`
+  is a single file today — the day it becomes a database, the
+  partition is the date.
+
+### Bulkheads first, cells when bulkheads are not enough
+
+A bulkhead is a wall inside one system; a cell is a whole copy of
+the system. They are the same idea at different scales:
+
+| | Bulkhead | Cell |
+|---|---|---|
+| What it is | Separate queue / pool / table per workload | A full stack copy (API + queue + DB slice) serving a subset of tenants |
+| What it stops | One slow downstream starving the rest | One bad deploy, one poison tenant, one region fault taking everyone down |
+| Cost | Small — a config change | Large — N copies of everything to deploy, monitor and patch |
+
+Start with bulkheads — one SQS queue per job type, one connection
+pool per workload, the DLQ from 2026-11-21. Add cells when a single
+tenant's failure can hurt the others: a tenant whose data is
+corrupt, a tenant under attack, or a deploy that must not reach
+everyone at once. A routing layer maps tenant → cell (usually a
+small lookup table, itself replicated), and the cell is invisible
+to the tenant: same API, same URLs, different backend.
+
+### The costs of cells, stated plainly
+
+Cells are not free, and the costs are operational, not code:
+
+- **N of everything.** N dashboards, N alarms, N deploys, N
+  database backups. A deploy that took one pipeline now takes a
+  rollout across cells — which is the point (a bad deploy hits one
+  cell), but the pipeline has to be built for it.
+- **Cross-cell work gets hard.** A report across all tenants now
+  reads N cells. If the business needs cross-tenant analytics,
+  that is a separate pipeline that aggregates out of the cells —
+  do not let reporting queries reach into every cell's live store.
+- **Cell assignment is a decision with a migration.** Moving a
+  tenant between cells means copying their data and flipping the
+  router. Keep tenants small enough per cell that a move is a
+  background copy, not a weekend migration.
+
+The rule: do not build cells until one tenant can plausibly hurt
+another. For a small system, bulkheads plus a single region plus a
+documented "not yet" (Part 1's decision record) is the right call.
+
+### Data residency: cells per region, for a legal reason
+
+Some tenants' data must stay in a country. That is not a
+performance decision — it is a cell decision: the tenant's cell
+lives in the region the law requires, and the router never sends
+their data elsewhere. Replication across regions for that tenant is
+off the table by design, and the RPO/RTO from Part 1 is set per
+cell, not per system.
+
+### Worked mapping
+
+- **Async User Register API:** users partition by `user_id` in
+  Cosmos DB / DynamoDB — the read pattern is "one user by id", so
+  the key is already right. The welcome topic is the bulkhead:
+  a flood of welcome sends cannot block registrations, because
+  they are different queues. Cells would come later: one cell per
+  client if the API ever serves more than one business.
+- **Medical AI Assistant:** the vector index is already partitioned
+  by tenant — `tenant_id` is a filter on every search, which is a
+  logical partition. The physical version is one index per tenant,
+  which is a cell for the search layer: one tenant's bad documents
+  cannot pollute another's retrieval. Same rule as the token design
+  (Part 2 of the Security notes): the partition key comes from the
+  token claim, never the request body.
+
+### Decision record: staying un-celled, for now
+
+"We stay on one cell because we have one tenant and one region,
+and the cost of N deploys exceeds the cost of a rare whole-system
+outage for this workload. Bulkheads (separate queues, DLQ, per-job
+pools) carry the isolation for now. Revisit when a second tenant
+arrives, or when one tenant's traffic passes 50% of the total."
+A decision with a revisit trigger is a design; a decision without
+one is drift — same rule as Part 1.
+
 ### What I will add next in this folder
 
-- Part 2: data partitioning and cell-based architecture in detail.
 - Part 3: game days — how to rehearse failure without causing one.
