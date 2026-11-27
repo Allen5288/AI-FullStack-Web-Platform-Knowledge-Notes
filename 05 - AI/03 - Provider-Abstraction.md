@@ -504,6 +504,192 @@ Practical rule: the streaming caller has two states, "nothing shown yet" and "so
 - **Token budgets do not fix a bad retrieval.** Cutting chunks to fit the window hides the fact that too much was retrieved. If the overflow rate is high, retrieve less, not just cut more.
 - **Streaming does not make the answer cheaper.** It makes the same tokens visible earlier, and makes cancelling possible. Total cost per finished answer is unchanged; cost per cancelled answer goes down.
 
+
+## 2026-11-28 — Part 5: caching and cost-aware routing
+
+Parts 1–4 built a client that is swappable (one interface, adapters
+per provider), resilient (retry, then one fallback), honest about
+shape (structured outputs validated in our code), and usable by a
+human waiting on screen (streaming, token budgets). None of that
+makes a single call cheaper. Today: the two things that do — caching
+answers instead of regenerating them, and routing each question to
+the cheapest model that can answer it well. Together they are the
+difference between a RAG assistant that costs $0.60 per 100
+questions and one that costs $0.06.
+
+Every generation costs `prompt tokens + completion tokens`, priced
+per provider and per model. There are only three ways to pay less:
+do not call the model at all (a cache), call a cheaper model
+(routing), or send fewer tokens (prompt caching, plus the Part 4
+budget — cut chunks, not the question).
+
+### Prompt caching: the same prefix, paid for once
+
+Most providers cache the *prefix* of a prompt — the leading tokens
+identical across calls. In our RAG assistant the system prompt, the
+instructions, and often the first retrieved chunks are the same for
+every question. Cached prefix tokens typically cost ~10% of the
+normal input price, and the first token arrives faster because the
+model does not re-process the prefix.
+
+- **The cache key is the exact prefix.** One changed word at the
+  start of the system prompt invalidates the whole cache. Put the
+  stable text first — system prompt, instructions, retrieved
+  chunks — and anything that varies per question last. Never put
+  a timestamp or per-question text in the middle of the stable block.
+- **Lifetime is short and provider-owned.** Typically 5–10 minutes
+  of inactivity, then it expires. Prompt caching saves money on
+  bursts of questions, not on one question an hour.
+- **It is an adapter detail, not a caller decision.** The Part 1
+  interface does not change; the adapter marks the stable prefix
+  as cacheable (each provider has its own flag) and reports
+  `cached_tokens` in the usage, next to `prompt_tokens`.
+- **Measure it or do not claim it.** Log `cached_tokens /
+  prompt_tokens` per call. Near zero on a steady stream means the
+  prefix is not actually stable — the usual leak is conversation
+  history sitting above the chunks.
+
+### Semantic cache: answering a repeated question without the model
+
+Prompt caching still calls the model. A semantic cache skips the
+call entirely: when a new question is close enough in meaning to a
+question already answered, return the stored answer. Embed the
+question with the same embedding model used for retrieval (RAG
+notes, Part 2) — no new dependency — then search the cache for
+stored questions above a similarity threshold. Start at **0.92
+cosine similarity** and tune from eval data: too low and "cheapest
+house in Parramatta" matches "cheapest house in Penrith"; too high
+and the cache never hits. Log every hit and miss — a cache you
+cannot measure is a cache you cannot trust.
+
+```python
+@dataclass
+class CacheEntry:
+    question: str
+    embedding: list[float]
+    answer: str
+    created_at: str          # ISO date — invalidation needs it
+    source_version: str      # the index build id the answer came from
+
+def lookup_semantic_cache(question: str, *, threshold: float = 0.92) -> str | None:
+    best = cache_store.nearest(embed(question))
+    if best is None or best.similarity < threshold:
+        return None
+    if best.entry.source_version != current_index_version():
+        return None                          # the world moved on; regenerate
+    return best.entry.answer
+```
+
+**Invalidation is the whole problem.** An exact cache (same string,
+same answer) is easy to invalidate and rarely hits. A semantic cache
+hits often and is easy to get wrong:
+
+- **Version the cache with the index.** Every entry records the
+  index build it was answered from; when the index is rebuilt, old
+  entries stop matching. This one rule prevents most stale answers.
+- **Time-box entries.** A TTL of 24 hours for listings, longer for
+  stable guidance. Older than its TTL, an entry is a miss.
+- **Never cache what must be fresh.** Prices, availability, "is this
+  still on the market" are never served from the semantic cache. A
+  per-question-type allowlist ("how does X work" yes, "what is the
+  price of Y" no) is simpler and safer than a clever rule.
+- **A cache hit still gets the faithfulness check.** The RAG
+  evaluation notes (Part 3) check an answer's claims against
+  retrieved chunks. A cached answer bypasses retrieval, so check it
+  against the current index before serving it.
+
+### Cost-aware routing: the cheap model first, the strong model when it earns it
+
+Not every question needs the strong model. "What suburbs are near
+Parramatta station?" is a lookup; "compare the diabetes guidance in
+these two PDFs and flag the contradiction" is reasoning. Routing
+sends each question to the cheapest model that can answer it, and
+escalates when the cheap answer is not good enough.
+
+Three mechanisms, in order of how much to trust them:
+
+1. **Rules first.** Question type, chunk count, and whether the
+   answer needs comparison are all known *before* the model is
+   called, and they are deterministic: single-fact lookups and
+   filter extraction go to the cheap model; multi-document
+   comparison and summaries of more than 3 chunks go to the
+   strong model. Rules route most questions correctly and cost
+   nothing. Start here and stay here until the rules demonstrably
+   fail.
+2. **Confidence-based escalation.** The cheap model answers, and a
+   cheap deterministic check decides whether to escalate: no
+   citation, structured output failed validation (Part 3), or the
+   answer is too thin for the question. Escalation re-runs the
+   question on the strong model, so you pay for both calls —
+   escalate only when the cheap answer is actually unusable, not
+   merely imperfect. If more than ~20% of cheap answers escalate,
+   the routing rule is wrong, not the cheap model.
+3. **A router model, last and reluctantly.** A small model that
+   classifies the question and picks the tier. It is itself a model
+   call, it needs its own eval set, and it is wrong in exactly the
+   cases where the choice matters. Use it only when rules plus
+   escalation leave a large grey middle — and eval it on the
+   golden set before it touches production.
+
+Never route by vibes ("this feels hard"). The router's input is
+observable facts: chunk count, question type, whether the last
+answer failed validation. If you cannot write the rule as a
+condition on facts you already have, the question goes to the
+strong model. Over-routing wastes money; under-routing wastes
+trust, and trust is harder to buy back.
+
+### Cost accounting: every request carries its own bill
+
+Routing and caching are only real if the cost is measured per
+request, not estimated per month. Extend the Part 1 result with
+`cached_tokens`, `cache_hit` (semantic cache served this answer),
+`escalated` (cheap answer rejected, strong model re-ran it), and
+`cost_usd` computed from the provider price table in config — then
+log one structured line per request. The monthly bill is the sum
+of those lines; if the sum does not match the provider invoice,
+the price table is out of date.
+
+- **Price tables live in config** — per model, per provider, one
+  file, updated when the provider announces a change. Same
+  discipline as the model name in Part 1.
+- **Escalations are a cost line, not a footnote.** An escalated
+  request pays for two generations. If the escalation rate climbs,
+  the routing rule is the problem, and the cost log is how you
+  prove it.
+- **Cache hits are a cost line too.** `cache_hit: true` with
+  `cost_usd: 0` is the saving, visible per request. The monthly
+  report is one subtraction: what the same requests would have
+  cost with no cache and no routing, minus what they cost.
+
+### What to measure
+
+- **Semantic cache hit rate** — hits / total questions, per
+  question type. Healthy for a support-style assistant is 20–40%.
+- **Prompt cache hit ratio** — `cached_tokens / prompt_tokens`.
+  Below ~50% on a steady stream, the prompt prefix is not stable.
+- **Escalation rate** — escalated / routed-to-cheap. Above ~20%,
+  fix the rule.
+- **Cost per answered question** — total `cost_usd` / questions,
+  split by route. The number this whole note exists to move.
+- **Stale-answer rate** — cache hits later found wrong. Above zero
+  is a reason to shorten a TTL or tighten a threshold.
+
+### What this does not solve
+
+- **Caching does not fix a bad answer.** It serves the same bad
+  answer faster and cheaper. Eval on the golden set (RAG notes)
+  still decides whether the answer is worth caching at all.
+- **Routing does not fix a bad cheap model.** If the cheap model
+  fails the golden set on the questions routed to it, route fewer
+  questions to it, or pick a different cheap model.
+- **A semantic cache is not a knowledge base.** It stores answers,
+  not facts, and cannot be queried or audited the way the retrieval
+  index can. When an answer needs correcting, fix the index and
+  let the cache version rule do its job.
+
 ### What I will add next in this file
 
-- Part 5: caching and cost-aware routing — prompt caching, a semantic cache for repeated questions, and routing a question to the cheap model or the strong model based on what the question needs.
+- Part 6: observability for the client — structured traces per
+  request (model, route, cache outcome, tokens, cost, latency)
+  and the monthly cost report that the logs in this part make
+  possible.
