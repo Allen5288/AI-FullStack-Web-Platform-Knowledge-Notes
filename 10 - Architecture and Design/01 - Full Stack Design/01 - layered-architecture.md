@@ -173,10 +173,124 @@ make you change your mind. The wrong shape is survivable; the
 undocumented shape is not, because the next person cannot tell a
 deliberate choice from an accident.
 
+## 2026-11-28 — Module boundaries: making "dependencies point inward" enforceable
+
+The 22 Nov note stated the one rule of layered architecture —
+dependencies point inward, an inner layer never knows about an
+outer one — and the 26 Nov note added the decision rule for when
+to slice vertically instead. Both notes describe a rule that lives
+in people's heads. A rule that lives in people's heads lasts until
+the first deadline. Today: how to make the boundary real, so a
+violation fails the build instead of becoming a quiet leak that
+someone discovers six months later.
+
+### A boundary is a contract, not a folder
+
+Folders do not enforce anything. `domain/` importing from
+`infrastructure/` is one import statement away, and nothing in
+Python, TypeScript, or C# stops it by default. A boundary needs
+three things: a written rule (which module may import which, in
+one place, readable in a minute), a check that runs in CI (the rule
+as code, failing the build on violation), and a place for the
+exceptions — because there will be some, and an undocumented
+exception is just a leak with a story.
+
+| Module may import | Presentation | Application | Domain | Infrastructure |
+|---|---|---|---|---|
+| Presentation | — | yes | no | no |
+| Application | no | — | yes | interfaces only |
+| Domain | no | no | — | no |
+| Infrastructure | no | no | yes | — |
+
+"Interfaces only" is the row that does the work: the application
+layer may depend on a repository *interface* defined in the domain
+or application layer, never on the concrete Cosmos DB client. The
+concrete class lives in infrastructure and is wired up at the
+composition root — the one place that knows about everything, and
+the one place allowed to.
+
+### Enforcing it: the cheapest check that works
+
+Pick the lightest tool your stack already has. The mechanism
+matters less than the fact that it runs on every pull request.
+
+- **Python — import-linter.** Contracts in `.importlinter`,
+  checked in CI: declare the layers in order and `lint-imports`
+  fails the PR on a domain module importing `infrastructure`.
+  The error names the file and the forbidden import — the fix is
+  usually to move the code, not to argue with the tool.
+- **TypeScript — eslint import rules.** `no-restricted-imports`,
+  or a boundary plugin (`@nx/enforce-module-boundaries` if the
+  repo already uses Nx). One rule per layer, same table as above,
+  same red PR.
+- **C# — project references.** One project per layer, and the
+  `.csproj` references *are* the table: `Domain` references
+  nothing, `Infrastructure` references `Domain`, `Application`
+  references `Domain`. A developer cannot add a forbidden
+  dependency without editing a project file — a visible,
+  reviewable act. This is the strongest enforcement of the three,
+  and the reason the layer-per-project shape survives in .NET shops.
+
+The pattern across all three: **the check lives in CI, not in a
+wiki page.** A rule checked only in code review is checked only
+when the reviewer remembers — which is to say, not checked.
+
+### What to do with the violations you already have
+
+A new check on an old codebase fails on day one. Do not turn it
+off, and do not fix fifty violations in one PR:
+
+- **Grandfather, explicitly.** List existing violations in the
+  contract config as ignored, with a date and a ticket each. An
+  ignored violation with a ticket is technical debt; one with no
+  ticket is permission.
+- **Fix the direction, not just the import.** A domain module
+  importing an infrastructure helper usually means a concept
+  belongs in the wrong layer — the helper is a domain concept
+  wearing an infrastructure name. Move the concept, not the
+  import line.
+- **One violation per PR after that.** New code follows the rule
+  from the first commit; old code is fixed as it is touched.
+
+### Boundaries inside a vertical slice
+
+Slices (26 Nov) do not escape this problem — they move it. A slice
+that imports another slice's internals has recreated layered
+coupling with worse names, and changing the booking slice breaks
+the registration slice. The boundary rule for slices is simpler and
+stricter: **a slice may import from `shared/`, never from another
+slice.** If two slices need the same thing, extract it into
+`shared/` on the second use, not the first. Enforce it the same
+way: a lint contract with one line, "no slice-to-slice imports",
+failing the build.
+
+### When a boundary is wrong
+
+Boundaries are design decisions, and decisions can be wrong:
+
+- **Every feature needs an exception.** The boundary is drawn
+  around the wrong concept. Redraw it — one ADR, one paragraph,
+  naming what changed.
+- **The check is fought, not followed.** Developers route around
+  the linter with dynamic imports or `any` casts. That is not
+  indiscipline; it is the boundary telling you it costs more than
+  it saves. Listen, then redraw or remove it.
+- **The boundary exists but nothing crosses it anyway.** Pure
+  ceremony on a small codebase. Delete it. A boundary earns its
+  place by catching real mistakes; a check that never fires is a
+  test with no assertions.
+
+The test for any boundary: remove it for a week in your head and
+ask what breaks. If the answer is "nothing, the team already
+follows the rule", keep the ADR and drop the linter rule. If the
+answer is "the domain would import the database within a month",
+the boundary is load-bearing and stays.
+
 ### What I will add next in this folder
 
-- 2026-11-27: 02 - AI Design — multi-agent patterns in depth
-  (supervisor/workers vs peer agents, shared state).
-- Later: a second pass on 03 - Security Design and 04 - Cloud
-  Design — both covered once already; next time one topic each,
-  in more depth.
+- The 2026-11-26 plan named a 27 Nov AI Design section on
+  multi-agent patterns — that landed on 2026-11-26 in
+  `02 - AI Design/01 - agent-orchestration.md` (Part 2), so this
+  file's plan is now caught up.
+- Next: 03 - Security Design, second pass — one topic in depth
+  (secrets handling across layers, or auth at the boundary).
