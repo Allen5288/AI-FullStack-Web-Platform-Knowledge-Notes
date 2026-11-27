@@ -412,8 +412,98 @@ Rules that follow:
   cannot tell a suburb from a street, no format flag will teach
   it. That is a prompt and eval problem, not a parsing problem.
 
+## 2026-11-27 — Part 4: streaming responses and token budgets
+
+Parts 1-3 built a client that returns one finished answer: `generate()` gives back the whole text, token usage and a clean error. That shape is fine for a RAG evaluation run, where nobody is waiting. It is the wrong shape for a user staring at a chat box. Today: streaming — sending the answer token by token as it is generated — and the token budget that decides what fits in the prompt in the first place.
+
+### Why stream at all
+
+- **Time to first token (TTFT) is the user experience.** A 20-second answer that starts in 1 second feels fast; a 20-second answer that starts in 20 seconds feels broken. Streaming does not make the model faster — it makes the wait visible, and a visible wait is tolerable.
+- **A long answer can be cancelled.** If the first paragraph is already wrong, the user stops it instead of paying for 800 more tokens. Without streaming, the whole answer is generated, paid for, and then thrown away.
+- **It is still the same generation.** Streaming changes delivery, not the model, the prompt or the eval. The golden set still grades the finished text.
+
+### The streaming interface
+
+Add one method to the client from Part 1. It yields events, not one result, and usage usually arrives only at the end — do not trust a token count until the `done` event:
+
+```python
+from dataclasses import dataclass
+from typing import Iterator
+
+@dataclass
+class StreamEvent:
+    kind: str          # "delta" | "done" | "usage"
+    text: str = ""     # delta text, empty for done/usage
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+class LLMClient:
+    # generate() from Part 1 stays as-is.
+    def stream(self, messages: list[ChatMessage], *,
+               temperature: float = 0.0,
+               max_tokens: int = 512) -> Iterator[StreamEvent]:
+        raise NotImplementedError
+```
+
+Rules for the caller:
+
+- **Accumulate, then display.** Keep a `full_text` buffer and append every delta to it. The buffer is the answer; the deltas are only the delivery. Eval, logging and citation checks (RAG notes, Part 3) all run on the buffer, never on one delta.
+- **Do not parse a partial answer.** A streamed JSON object is invalid JSON until the last `}` arrives. If the answer is structured output (Part 3), buffer it and validate it once, at the end. Show raw text while it streams, or show nothing until it is complete — never show a half-parsed object.
+- **Not every provider supports streaming the same way.** Groq and Azure both stream, but the event shape and when usage arrives differ. That is adapter work, exactly like Part 1: the interface above is the shared shape, the adapter translates. If a provider cannot stream, the adapter can fake it by calling `generate()` once and yielding the whole text as one delta — slow, but the caller never knows. Put that behind a capability flag, not a second code path in the caller.
+
+### Token budgets: what fits in the prompt
+
+Every model has a context window — the total tokens for prompt + answer. A budget is how you spend it before you call the model:
+
+```python
+@dataclass
+class TokenBudget:
+    context_window: int      # e.g. 128_000 for the model in use
+    reserve_completion: int  # tokens kept aside for the answer, e.g. 1_024
+    safety_margin: int = 512 # room for the system prompt growing, and for counting error
+
+    @property
+    def prompt_budget(self) -> int:
+        return self.context_window - self.reserve_completion - self.safety_margin
+```
+
+- **Count tokens, do not guess them.** "Roughly 4 characters per token" is fine for a back-of-envelope estimate and wrong for a budget. Use the provider's tokenizer (for example `tiktoken` for OpenAI-family models) on the exact messages you will send. Count the system prompt, the retrieved chunks, the conversation history and the question — all of it.
+- **The answer needs a reserve.** If the prompt eats the whole window, `max_tokens` is silently cut to whatever is left, and the answer is truncated mid-sentence. Reserve the completion tokens first, then budget the prompt against what remains. The reserve is a product decision, not a model one: a one-line filter answer needs 256 tokens; a grounded RAG answer with citations needs 1,024.
+- **When the prompt is over budget, cut in a fixed order.** First the oldest conversation turns, then the lowest-scoring retrieved chunks, and never the question or the system prompt. Cutting the question to fit the chunks is how a RAG answer ends up fluent, confident and about the wrong thing. Log what was cut and how many tokens it saved — that is eval data, and it is also the first thing to check when answers get worse after a retrieval change.
+- **A budget is per call, not per model.** Two providers with different context windows need two budgets. The budget lives next to the adapter config, not in shared code, for the same reason the model name does (Part 1).
+
+### Cancelling a runaway generation
+
+Streaming is what makes cancelling possible, and cancelling is a cost control, not just a UX nicety:
+
+- **Stop reading the stream and close the connection.** The provider stops generating (or stops sending), and you stop paying for tokens that would have followed. You still pay for the tokens already generated — cancelling is not free, it is cheaper than the full answer.
+- **Log the partial answer and the reason.** "User cancelled after 312 tokens" and "cancelled by the 30-second timeout after 0 tokens" are different problems. The first is a quality signal; the second is a provider or prompt problem.
+- **A timeout is a budget too.** Cap the total streaming time (30 seconds is a reasonable default for a chat answer) and cancel past it. A generation that has not finished in 30 seconds is unlikely to finish well, and the user has already left.
+
+### Why streaming changes the retry story from Part 2
+
+Part 2 said: retry retryable errors, then fall back once to a second provider. That rule only works before the user has seen anything:
+
+- **Retry only before the first token.** If the stream fails before the first delta, nothing has been shown — retry or fall back exactly as in Part 2, and the user never knows.
+- **After the first delta, never silently retry.** The user has already read half an answer. A retry would either show a second, different answer underneath the first, or silently replace text the user has already read. Both are worse than a visible failure. The correct response is to stop, keep the partial text on screen, and say the answer was cut off — with a retry button the user chooses to press.
+- **Fallback after streaming started is worse than no fallback.** Two providers would produce two different partial answers. The fallback is for a failed call, not a half-finished one. If the primary fails mid-stream, the question fails visibly; log it, count it, and fix the provider or the prompt.
+- **Structured outputs make this sharper.** A half-streamed JSON object cannot be repaired by retrying the same prompt mid-stream. The repair retry from Part 3 happens on the complete buffered text, after the stream ends — never inside the stream.
+
+Practical rule: the streaming caller has two states, "nothing shown yet" and "something shown". Retries and fallbacks belong to the first state only.
+
+### What to measure
+
+- **TTFT** — time to first token. Watch it per provider; a provider that is cheap but slow to start loses the streaming benefit.
+- **Tokens per second while streaming** — a stalled stream feels like a hang, even if the total time is fine.
+- **Cancelled rate** — cancellations per 100 answers, and tokens generated before cancellation. A rising rate means the first paragraph is going wrong, not that users are impatient.
+- **Budget overflow rate** — how often the prompt had to be cut to fit. If it rises after a retrieval change, the retrieval change is the problem.
+
+### What this does not solve
+
+- **Streaming does not fix a bad answer faster.** It shows a bad answer sooner. Eval on the finished text (RAG notes) is still the only quality check.
+- **Token budgets do not fix a bad retrieval.** Cutting chunks to fit the window hides the fact that too much was retrieved. If the overflow rate is high, retrieve less, not just cut more.
+- **Streaming does not make the answer cheaper.** It makes the same tokens visible earlier, and makes cancelling possible. Total cost per finished answer is unchanged; cost per cancelled answer goes down.
+
 ### What I will add next in this file
 
-- Part 4: streaming responses and token budgets — partial output,
-  cancelling a runaway generation, and why streaming changes the
-  retry story from Part 2.
+- Part 5: caching and cost-aware routing — prompt caching, a semantic cache for repeated questions, and routing a question to the cheap model or the strong model based on what the question needs.
